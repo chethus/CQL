@@ -16,9 +16,10 @@ from .sac import SAC
 from .replay_buffer import ReplayBuffer, batch_to_torch
 from .model import TanhGaussianPolicy, FullyConnectedQFunction, SamplerPolicy
 from .sampler import StepSampler, TrajSampler
-from .utils import Timer, define_flags_with_default, set_random_seed, print_flags, get_user_flags, prefix_metrics
+from .utils import Timer, define_flags_with_default, make_env_calculator, set_random_seed, print_flags, get_user_flags, prefix_metrics
 from .utils import WandBLogger
 from viskit.logging import logger, setup_logger
+import locked_doors.room_world.multiroom
 
 
 FLAGS_DEF = define_flags_with_default(
@@ -27,7 +28,7 @@ FLAGS_DEF = define_flags_with_default(
     replay_buffer_size=1000000,
     seed=42,
     device='cuda',
-    save_model=False,
+    save_model=True,
 
     policy_arch='256-256',
     qf_arch='256-256',
@@ -45,6 +46,9 @@ FLAGS_DEF = define_flags_with_default(
 
     sac=SAC.get_default_config(),
     logging=WandBLogger.get_default_config(),
+    env_logging=False,
+
+    flatten_obs=False,
 )
 
 
@@ -63,8 +67,15 @@ def main(argv):
 
     set_random_seed(FLAGS.seed)
 
-    train_sampler = StepSampler(gym.make(FLAGS.env).unwrapped, FLAGS.max_traj_length)
-    eval_sampler = TrajSampler(gym.make(FLAGS.env).unwrapped, FLAGS.max_traj_length)
+    train_env = gym.make(FLAGS.env).unwrapped
+    eval_env = gym.make(FLAGS.env).unwrapped
+
+    if FLAGS.flatten_obs:
+        train_env = gym.wrappers.FlattenObservation(train_env)
+        eval_env = gym.wrappers.FlattenObservation(eval_env)
+
+    train_sampler = StepSampler(train_env, FLAGS.max_traj_length)
+    eval_sampler = TrajSampler(eval_env, FLAGS.max_traj_length)
 
     replay_buffer = ReplayBuffer(FLAGS.replay_buffer_size)
 
@@ -95,6 +106,9 @@ def main(argv):
 
     if FLAGS.sac.target_entropy >= 0.0:
         FLAGS.sac.target_entropy = -np.prod(eval_sampler.env.action_space.shape).item()
+
+    if FLAGS.env_logging:
+        env_logger = make_env_calculator(FLAGS.env)
 
     sac = SAC(FLAGS.sac, policy, qf1, qf2, target_qf1, target_qf2)
     sac.torch_to_device(FLAGS.device)
@@ -131,6 +145,9 @@ def main(argv):
                 metrics['average_return'] = np.mean([np.sum(t['rewards']) for t in trajs])
                 metrics['average_traj_length'] = np.mean([len(t['rewards']) for t in trajs])
 
+                if FLAGS.env_logging:
+                    metrics.update(env_logger.get_env_metrics(trajs))
+
                 if FLAGS.save_model:
                     save_data = {'sac': sac, 'variant': variant, 'epoch': epoch}
                     wandb_logger.save_pickle(save_data, 'model.pkl')
@@ -139,6 +156,7 @@ def main(argv):
         metrics['train_time'] = train_timer()
         metrics['eval_time'] = eval_timer()
         metrics['epoch_time'] = rollout_timer() + train_timer() + eval_timer()
+
         wandb_logger.log(metrics)
         viskit_metrics.update(metrics)
         logger.record_dict(metrics)

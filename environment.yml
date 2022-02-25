@@ -28,6 +28,6 @@ dependencies:
         - pygame
         - gtimer
         - joblib
-        - git+https://github.com/rail-berkeley/d4rl@master#egg=d4rl
+        - git+https://github.com/chethus/d4rl@master#egg=d4rl
         - wandb
         - ml_collections

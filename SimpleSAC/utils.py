@@ -113,6 +113,41 @@ class WandBLogger(object):
         return self.config.output_dir
 
 
+class LockedDoorsEnvCalculator(object):
+
+    def __init__(self, env_name):
+        self.env_name = env_name
+    
+    def get_env_metrics(self, trajs):
+        final_xs, final_ys, first_crossings, successes = [], [], [], []
+        for t in trajs:
+            obs_arr = t['observations']
+            for i in range(len(obs_arr)):
+                if obs_arr[i][5] > 0:
+                    first_crossing = i
+                    success = 1
+                    break
+            else:
+                first_crossing = 100
+                success = 0
+            last_obs = obs_arr[-1]
+            final_xs.append(last_obs[4])
+            final_ys.append(last_obs[5])
+            first_crossings.append(first_crossing)
+            successes.append(success)
+        metrics = {}
+        metrics['env/average_final_x'] = np.mean(final_xs)
+        metrics['env/min_final_x'] = np.min(final_xs)
+        metrics['env/max_final_x'] = np.max(final_xs)
+        metrics['env/average_final_y'] = np.mean(final_ys)
+        metrics['env/min_final_y'] = np.min(final_ys)
+        metrics['env/max_final_y'] = np.max(final_ys)
+        metrics['env/average_first_crossing'] = np.mean(first_crossings)
+        metrics['env/min_first_crossing'] = np.min(first_crossings)
+        metrics['env/max_first_crossing'] = np.max(first_crossings)
+        metrics['env/success_rate'] = np.mean(successes)
+        return metrics
+
 def define_flags_with_default(**kwargs):
     for key, val in kwargs.items():
         if isinstance(val, ConfigDict):
@@ -178,3 +213,11 @@ def prefix_metrics(metrics, prefix):
     return {
         '{}/{}'.format(prefix, key): value for key, value in metrics.items()
     }
+
+def make_env_calculator(env_name):
+    if 'LockedDoors' not in env_name:
+        raise Exception('Enviroment logging only supported for LockedDoors environments.')
+    return LockedDoorsEnvCalculator(env_name)
+        
+    
+
