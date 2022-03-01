@@ -8,6 +8,7 @@ import torch
 import torch.optim as optim
 from torch import nn as nn
 import torch.nn.functional as F
+from .utils import unflatten_dict
 
 from .model import Scalar, soft_target_update
 
@@ -72,6 +73,7 @@ class SAC(object):
     def train(self, batch):
         self._total_steps += 1
 
+        batch = unflatten_dict(batch)
         observations = batch['observations']
         actions = batch['actions']
         rewards = batch['rewards']

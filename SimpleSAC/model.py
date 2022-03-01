@@ -26,6 +26,8 @@ def soft_target_update(network, target_network, soft_target_update_rate):
 def multiple_action_q_function(forward):
     # Forward the q function with multiple actions on each state, to be used as a decorator
     def wrapped(self, observations, actions, **kwargs):
+        if type(observations) == dict:
+            observations = torch.hstack([v for k, v in sorted(observations.items())])
         multiple_actions = False
         batch_size = observations.shape[0]
         if actions.ndim == 3 and observations.ndim == 2:
@@ -118,7 +120,6 @@ class ReparameterizedTanhGaussian(nn.Module):
 
         return action_sample, log_prob
 
-
 class TanhGaussianPolicy(nn.Module):
 
     def __init__(self, observation_dim, action_dim, arch='256-256',
@@ -139,6 +140,8 @@ class TanhGaussianPolicy(nn.Module):
         self.tanh_gaussian = ReparameterizedTanhGaussian(no_tanh=no_tanh)
 
     def log_prob(self, observations, actions):
+        if type(observations) == dict:
+            observations = torch.hstack([v for k, v in sorted(observations.items())])
         if actions.ndim == 3:
             observations = extend_and_repeat(observations, 1, actions.shape[1])
         base_network_output = self.base_network(observations)
@@ -147,6 +150,10 @@ class TanhGaussianPolicy(nn.Module):
         return self.tanh_gaussian.log_prob(mean, log_std, actions)
 
     def forward(self, observations, deterministic=False, repeat=None):
+        if type(observations) == np.array and observations.ndim == 1:
+            observations = np.expand_dims(observations, 0)
+        if type(observations) == dict:
+            observations = torch.hstack([v for k, v in sorted(observations.items())])
         if repeat is not None:
             observations = extend_and_repeat(observations, 1, repeat)
         base_network_output = self.base_network(observations)
@@ -162,6 +169,10 @@ class SamplerPolicy(object):
         self.device = device
 
     def __call__(self, observations, deterministic=False):
+        if type(observations) == dict:
+            observations = np.hstack([v for k, v in sorted(observations.items())]).astype('float32')
+        if observations.ndim == 1:
+            observations = np.expand_dims(observations, 0).astype('float32')
         with torch.no_grad():
             observations = torch.tensor(
                 observations, dtype=torch.float32, device=self.device
@@ -185,6 +196,8 @@ class FullyConnectedQFunction(nn.Module):
 
     @multiple_action_q_function
     def forward(self, observations, actions):
+        if type(observations) == dict:
+            observations = torch.hstack([v for k, v in sorted(observations.items())])
         input_tensor = torch.cat([observations, actions], dim=-1)
         return torch.squeeze(self.network(input_tensor), dim=-1)
 

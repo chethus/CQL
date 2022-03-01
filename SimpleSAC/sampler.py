@@ -1,4 +1,6 @@
 import numpy as np
+from collections import defaultdict
+from .utils import flatten_dict
 
 
 class StepSampler(object):
@@ -10,24 +12,23 @@ class StepSampler(object):
         self._current_observation = self.env.reset()
 
     def sample(self, policy, n_steps, deterministic=False, replay_buffer=None):
-        observations = []
-        actions = []
-        rewards = []
-        next_observations = []
-        dones = []
-
+        traj = defaultdict(list)
         for _ in range(n_steps):
             self._traj_steps += 1
             observation = self._current_observation
             action = policy(
-                np.expand_dims(observation, 0), deterministic=deterministic
+                observation, deterministic=deterministic
             )[0, :]
             next_observation, reward, done, _ = self.env.step(action)
-            observations.append(observation)
-            actions.append(action)
-            rewards.append(reward)
-            dones.append(done)
-            next_observations.append(next_observation)
+            transition = dict(
+                **flatten_dict(dict(observations=observation)),
+                actions=action,
+                rewards=reward,
+                **flatten_dict(dict(next_observations=next_observation)),
+                dones=done,
+            )
+            for k, v in transition.items():
+                traj[k].append(v)
 
             if replay_buffer is not None:
                 replay_buffer.add_sample(
@@ -40,13 +41,10 @@ class StepSampler(object):
                 self._traj_steps = 0
                 self._current_observation = self.env.reset()
 
-        return dict(
-            observations=np.array(observations, dtype=np.float32),
-            actions=np.array(actions, dtype=np.float32),
-            rewards=np.array(rewards, dtype=np.float32),
-            next_observations=np.array(next_observations, dtype=np.float32),
-            dones=np.array(dones, dtype=np.float32),
-        )
+        traj = flatten_dict(traj)
+        for k, v in traj.items():
+            traj[k] = np.array(v, dtype=np.float32)
+        return traj
 
     @property
     def env(self):
@@ -60,26 +58,27 @@ class TrajSampler(object):
         self._env = env
 
     def sample(self, policy, n_trajs, deterministic=False, replay_buffer=None):
-        trajs = []
+        trajs, traj_infos = [], []
         for _ in range(n_trajs):
-            observations = []
-            actions = []
-            rewards = []
-            next_observations = []
-            dones = []
-
+            traj, traj_info = defaultdict(list), defaultdict(list)
             observation = self.env.reset()
 
             for _ in range(self.max_traj_length):
                 action = policy(
-                    np.expand_dims(observation, 0), deterministic=deterministic
+                    observation, deterministic=deterministic
                 )[0, :]
-                next_observation, reward, done, _ = self.env.step(action)
-                observations.append(observation)
-                actions.append(action)
-                rewards.append(reward)
-                dones.append(done)
-                next_observations.append(next_observation)
+                next_observation, reward, done, info = self.env.step(action)
+                transition = dict(
+                    **flatten_dict(dict(observations=observation)),
+                    actions=action,
+                    rewards=reward,
+                    **flatten_dict(dict(next_observations=next_observation)),
+                    dones=done,
+                )
+                for k, v in transition.items():
+                    traj[k].append(v)
+                for k, v in info.items():
+                    traj_info[k].append(v)
 
                 if replay_buffer is not None:
                     replay_buffer.add_sample(
@@ -91,15 +90,14 @@ class TrajSampler(object):
                 if done:
                     break
 
-            trajs.append(dict(
-                observations=np.array(observations, dtype=np.float32),
-                actions=np.array(actions, dtype=np.float32),
-                rewards=np.array(rewards, dtype=np.float32),
-                next_observations=np.array(next_observations, dtype=np.float32),
-                dones=np.array(dones, dtype=np.float32),
-            ))
+            for k, v in traj.items():
+                traj[k] = np.array(v, dtype=np.float32)
+            for k, v in traj_info.items():
+                traj_info[k] = np.array(v, dtype=np.float32)
 
-        return trajs
+            trajs.append(traj)
+            traj_infos.append(traj_info)
+        return trajs, traj_infos
 
     @property
     def env(self):

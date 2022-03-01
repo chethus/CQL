@@ -14,9 +14,10 @@ import absl.flags
 
 from .sac import SAC
 from .replay_buffer import ReplayBuffer, batch_to_torch
+from .dict_replay_buffer import DictReplayBuffer
 from .model import TanhGaussianPolicy, FullyConnectedQFunction, SamplerPolicy
 from .sampler import StepSampler, TrajSampler
-from .utils import Timer, define_flags_with_default, make_env_calculator, set_random_seed, print_flags, get_user_flags, prefix_metrics
+from .utils import Timer, define_flags_with_default, set_random_seed, print_flags, get_user_flags, prefix_metrics
 from .utils import WandBLogger
 from viskit.logging import logger, setup_logger
 import locked_doors.room_world.multiroom
@@ -77,10 +78,19 @@ def main(argv):
     train_sampler = StepSampler(train_env, FLAGS.max_traj_length)
     eval_sampler = TrajSampler(eval_env, FLAGS.max_traj_length)
 
-    replay_buffer = ReplayBuffer(FLAGS.replay_buffer_size)
+    if FLAGS.flatten_obs:
+        replay_buffer = ReplayBuffer(FLAGS.replay_buffer_size)
+    else:
+        replay_buffer = DictReplayBuffer(FLAGS.replay_buffer_size)
+    
+    example_obs = train_env.reset()
+    if type(example_obs) == dict:
+        observation_dim = sum(map(np.size, example_obs.values()))
+    else:
+        observation_dim = eval_sampler.env.observation_space.shape[0]
 
     policy = TanhGaussianPolicy(
-        eval_sampler.env.observation_space.shape[0],
+        observation_dim,
         eval_sampler.env.action_space.shape[0],
         arch=FLAGS.policy_arch,
         log_std_multiplier=FLAGS.policy_log_std_multiplier,
@@ -89,7 +99,7 @@ def main(argv):
     )
 
     qf1 = FullyConnectedQFunction(
-        eval_sampler.env.observation_space.shape[0],
+        observation_dim,
         eval_sampler.env.action_space.shape[0],
         arch=FLAGS.qf_arch,
         orthogonal_init=FLAGS.orthogonal_init,
@@ -97,7 +107,7 @@ def main(argv):
     target_qf1 = deepcopy(qf1)
 
     qf2 = FullyConnectedQFunction(
-        eval_sampler.env.observation_space.shape[0],
+        observation_dim,
         eval_sampler.env.action_space.shape[0],
         arch=FLAGS.qf_arch,
         orthogonal_init=FLAGS.orthogonal_init,
@@ -106,9 +116,6 @@ def main(argv):
 
     if FLAGS.sac.target_entropy >= 0.0:
         FLAGS.sac.target_entropy = -np.prod(eval_sampler.env.action_space.shape).item()
-
-    if FLAGS.env_logging:
-        env_logger = make_env_calculator(FLAGS.env)
 
     sac = SAC(FLAGS.sac, policy, qf1, qf2, target_qf1, target_qf2)
     sac.torch_to_device(FLAGS.device)
@@ -138,15 +145,18 @@ def main(argv):
 
         with Timer() as eval_timer:
             if epoch == 0 or (epoch + 1) % FLAGS.eval_period == 0:
-                trajs = eval_sampler.sample(
+                trajs, traj_infos = eval_sampler.sample(
                     sampler_policy, FLAGS.eval_n_trajs, deterministic=True
                 )
 
                 metrics['average_return'] = np.mean([np.sum(t['rewards']) for t in trajs])
                 metrics['average_traj_length'] = np.mean([len(t['rewards']) for t in trajs])
-
-                if FLAGS.env_logging:
-                    metrics.update(env_logger.get_env_metrics(trajs))
+                info_keys = traj_infos[0].keys()
+                for k in info_keys:
+                    metrics[f'env/avg_last_{k}'] = np.mean([traj_info[k][-1] for traj_info in traj_infos])
+                    metrics[f'env/avg_min_{k}'] = np.mean([min(traj_info[k]) for traj_info in traj_infos])
+                    metrics[f'env/avg_max_{k}'] = np.mean([max(traj_info[k]) for traj_info in traj_infos])
+                    metrics[f'env/avg_{k}'] = np.mean([np.mean(traj_info[k]) for traj_info in traj_infos])
 
                 if FLAGS.save_model:
                     save_data = {'sac': sac, 'variant': variant, 'epoch': epoch}

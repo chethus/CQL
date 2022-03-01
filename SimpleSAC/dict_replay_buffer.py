@@ -1,32 +1,30 @@
 from copy import copy, deepcopy
 from queue import Queue
+from .utils import flatten_dict
 import threading
 
 import numpy as np
 import torch
 
 
-class ReplayBuffer(object):
-    def __init__(self, max_size, data=None):
+class DictReplayBuffer(object):
+    def __init__(self, max_size):
         self._max_size = max_size
         self._next_idx = 0
         self._size = 0
         self._initialized = False
         self._total_steps = 0
 
-        if data is not None:
-            if self._max_size < data['observations'].shape[0]:
-                self._max_size = data['observations'].shape[0]
-            self.add_batch(data)
-
     def __len__(self):
         return self._size
 
-    def _init_storage(self, observation_dim, action_dim):
-        self._observation_dim = observation_dim
+    def _init_storage(self, example_obs, action_dim):
+        example_obs = flatten_dict(example_obs)
+        self._observations, self._next_observations = dict(), dict()
+        for k, v in example_obs.items():
+            self._observations[k] = np.zeros((self._max_size, *np.array(v).shape), dtype=np.float32)
+            self._next_observations[k] = np.zeros((self._max_size, *v.shape), dtype=np.float32)
         self._action_dim = action_dim
-        self._observations = np.zeros((self._max_size, observation_dim), dtype=np.float32)
-        self._next_observations = np.zeros((self._max_size, observation_dim), dtype=np.float32)
         self._actions = np.zeros((self._max_size, action_dim), dtype=np.float32)
         self._rewards = np.zeros(self._max_size, dtype=np.float32)
         self._dones = np.zeros(self._max_size, dtype=np.float32)
@@ -36,10 +34,12 @@ class ReplayBuffer(object):
 
     def add_sample(self, observation, action, reward, next_observation, done):
         if not self._initialized:
-            self._init_storage(observation.size, action.size)
+            self._init_storage(observation, action.size)
 
-        self._observations[self._next_idx, :] = np.array(observation, dtype=np.float32)
-        self._next_observations[self._next_idx, :] = np.array(next_observation, dtype=np.float32)
+        for k, v in observation.items():
+            self._observations[k][self._next_idx, ...] = np.array(v, dtype=np.float32)
+        for k, v in next_observation.items():
+            self._next_observations[k][self._next_idx, ...] = np.array(v, dtype=np.float32)
         self._actions[self._next_idx, :] = np.array(action, dtype=np.float32)
         self._rewards[self._next_idx] = reward
         self._dones[self._next_idx] = float(done)
@@ -64,13 +64,15 @@ class ReplayBuffer(object):
         return self.select(indices)
 
     def select(self, indices):
-        return dict(
-            observations=self._observations[indices, ...],
+        selected_observations = {k: v[indices, ...] for k, v in self._observations.items()}
+        selected_next_observations = {k: v[indices, ...] for k, v in self._next_observations.items()}
+        return flatten_dict(dict(
+            observations=selected_observations,
             actions=self._actions[indices, ...],
             rewards=self._rewards[indices, ...],
-            next_observations=self._next_observations[indices, ...],
+            next_observations=selected_next_observations,
             dones=self._dones[indices, ...],
-        )
+        ))
 
     def generator(self, batch_size, n_batchs=None):
         i = 0
@@ -84,13 +86,13 @@ class ReplayBuffer(object):
 
     @property
     def data(self):
-        return dict(
-            observations=self._observations[:self._size, ...],
+        return flatten_dict(dict(
+            observations=self._observations,
             actions=self._actions[:self._size, ...],
             rewards=self._rewards[:self._size, ...],
-            next_observations=self._next_observations[:self._size, ...],
+            next_observations=self._next_observations,
             dones=self._dones[:self._size, ...]
-        )
+        ))
 
 
 def batch_to_torch(batch, device):
