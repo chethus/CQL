@@ -7,6 +7,7 @@ import os
 from copy import copy
 from socket import gethostname
 import pickle
+import torch.nn as nn
 
 import numpy as np
 
@@ -198,7 +199,21 @@ def unflatten_dict(d, separator='.'):
             d_copy[k] = unflatten_dict(v)
     return dict(d_copy)
 
-
+def get_cifar_head():
+    return nn.ModuleList([
+        nn.Conv2d(3, 6, 5),
+        nn.ReLU(),
+        nn.MaxPool2d(2, 2),
+        nn.Conv2d(6, 16, 5),
+        nn.ReLU(),
+        nn.MaxPool2d(2,2),
+        nn.Flatten(),
+        nn.Linear(16 * 5 * 5, 120),
+        nn.ReLU(),
+        nn.Linear(120, 84),
+        nn.ReLU(),
+        nn.Linear(84, 10)
+    ])
 
 def prefix_metrics(metrics, prefix):
     return {

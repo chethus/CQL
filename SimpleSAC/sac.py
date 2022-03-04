@@ -12,7 +12,6 @@ from .utils import unflatten_dict
 
 from .model import Scalar, soft_target_update
 
-
 class SAC(object):
 
     @staticmethod
@@ -120,11 +119,11 @@ class SAC(object):
             self.alpha_optimizer.step()
 
         self.policy_optimizer.zero_grad()
-        policy_loss.backward()
+        policy_loss.backward(retain_graph=True)
         self.policy_optimizer.step()
 
         self.qf_optimizer.zero_grad()
-        qf_loss.backward()
+        qf_loss.backward(retain_graph=True)
         self.qf_optimizer.step()
 
         if self.total_steps % self.config.target_update_period == 0:

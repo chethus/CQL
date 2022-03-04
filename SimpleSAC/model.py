@@ -5,10 +5,11 @@ import torch.nn.functional as F
 from torch.distributions import Normal
 from torch.distributions.transformed_distribution import TransformedDistribution
 from torch.distributions.transforms import TanhTransform
+from .utils import get_cifar_head
 
 
 def extend_and_repeat(tensor, dim, repeat):
-    # Extend and repeast the tensor along dim axie and repeat it
+    # Extend the tensor along dim axis and repeat it
     ones_shape = [1 for _ in range(tensor.ndim + 1)]
     ones_shape[dim] = repeat
     return torch.unsqueeze(tensor, dim) * tensor.new_ones(ones_shape)
@@ -26,13 +27,20 @@ def soft_target_update(network, target_network, soft_target_update_rate):
 def multiple_action_q_function(forward):
     # Forward the q function with multiple actions on each state, to be used as a decorator
     def wrapped(self, observations, actions, **kwargs):
-        if type(observations) == dict:
-            observations = torch.hstack([v for k, v in sorted(observations.items())])
         multiple_actions = False
-        batch_size = observations.shape[0]
-        if actions.ndim == 3 and observations.ndim == 2:
+        if isinstance(observations, dict):
+            batch_size = next(iter(observations.values())).shape[0]
+            observations_ndim = min(v.ndim for v in observations.values())
+        else:
+            batch_size = observations.shape[0]
+            observations_ndim = observations.ndim
+        if actions.ndim == 3 and observations_ndim == 2:
             multiple_actions = True
-            observations = extend_and_repeat(observations, 1, actions.shape[1]).reshape(-1, observations.shape[-1])
+            if isinstance(observations, dict):
+                for k, v in observations.items():
+                    observations[k] = extend_and_repeat(v, 1, actions.shape[1]).reshape(-1, v.shape[-1])
+            else:
+                observations = extend_and_repeat(observations, 1, actions.shape[1]).reshape(-1, observations.shape[-1])
             actions = actions.reshape(-1, actions.shape[-1])
         q_values = forward(self, observations, actions, **kwargs)
         if multiple_actions:
@@ -139,9 +147,35 @@ class TanhGaussianPolicy(nn.Module):
         self.log_std_offset = Scalar(log_std_offset)
         self.tanh_gaussian = ReparameterizedTanhGaussian(no_tanh=no_tanh)
 
+    @classmethod
+    def build_from_obs(cls, example_obs, action_dim, arch='256-256',
+                 log_std_multiplier=1.0, log_std_offset=-1.0,
+                 orthogonal_init=False, no_tanh=False):
+        obs_is_dict = isinstance(example_obs, dict)
+        if obs_is_dict:
+            cifar_heads = nn.ModuleDict()
+            flat_observation_dim = 0
+            for k, v in sorted(example_obs.items()):
+                if v.ndim == 3:
+                    assert v.shape == (3, 32, 32), 'Only CIFAR images allowed.'
+                    cifar_heads[k] = get_cifar_head()
+                    # We will use a convolutional head with 10 outputs
+                    flat_observation_dim += 10
+                elif v.ndim == 1:
+                    flat_observation_dim  += v.shape[0]
+                else:
+                    raise Exception("Only image and vector observation entries supported.")
+        else:
+            flat_observation_dim = example_obs.shape[0]
+        policy = cls(flat_observation_dim, action_dim, arch, log_std_multiplier,
+            log_std_offset, orthogonal_init, no_tanh)
+        if obs_is_dict:
+            policy.cifar_heads = cifar_heads
+        return policy
+
     def log_prob(self, observations, actions):
-        if type(observations) == dict:
-            observations = torch.hstack([v for k, v in sorted(observations.items())])
+        if isinstance(observations, dict):
+            observations = self.flatten_obs(observations)
         if actions.ndim == 3:
             observations = extend_and_repeat(observations, 1, actions.shape[1])
         base_network_output = self.base_network(observations)
@@ -150,16 +184,25 @@ class TanhGaussianPolicy(nn.Module):
         return self.tanh_gaussian.log_prob(mean, log_std, actions)
 
     def forward(self, observations, deterministic=False, repeat=None):
-        if type(observations) == np.array and observations.ndim == 1:
-            observations = np.expand_dims(observations, 0)
-        if type(observations) == dict:
-            observations = torch.hstack([v for k, v in sorted(observations.items())])
+        if isinstance(observations, dict):
+            observations = self.flatten_obs(observations)
         if repeat is not None:
             observations = extend_and_repeat(observations, 1, repeat)
         base_network_output = self.base_network(observations)
         mean, log_std = torch.split(base_network_output, self.action_dim, dim=-1)
         log_std = self.log_std_multiplier() * log_std + self.log_std_offset()
         return self.tanh_gaussian(mean, log_std, deterministic)
+    
+    def flatten_obs(self, observations):
+        observations_copy = {k: v for k, v in observations.items()}
+        for k, v in observations_copy.items():
+            if v.ndim != 4:
+                continue
+            for layer in self.cifar_heads[k]:
+                observations_copy[k] = layer(observations_copy[k])
+        return torch.hstack([v for _, v in sorted(observations_copy.items())])
+
+        
 
 
 class SamplerPolicy(object):
@@ -169,14 +212,18 @@ class SamplerPolicy(object):
         self.device = device
 
     def __call__(self, observations, deterministic=False):
-        if type(observations) == dict:
-            observations = np.hstack([v for k, v in sorted(observations.items())]).astype('float32')
-        if observations.ndim == 1:
-            observations = np.expand_dims(observations, 0).astype('float32')
+        obs_is_arr = type(observations).__module__ == np.__name__
         with torch.no_grad():
-            observations = torch.tensor(
-                observations, dtype=torch.float32, device=self.device
-            )
+            if obs_is_arr:
+                if observations.ndim == 1:
+                    observations = np.expand_dims(observations, 0).astype('float32')
+                observations = torch.tensor(
+                    observations, dtype=torch.float32, device=self.device
+                )
+            elif isinstance(observations, dict):
+                observations = {k: torch.tensor(v, dtype=torch.float32,
+                    device=self.device) for k, v in observations.items()}
+                    
             actions, _ = self.policy(observations, deterministic)
             actions = actions.cpu().numpy()
         return actions
@@ -193,13 +240,45 @@ class FullyConnectedQFunction(nn.Module):
         self.network = FullyConnectedNetwork(
             observation_dim + action_dim, 1, arch, orthogonal_init
         )
+    
+    @classmethod
+    def build_from_obs(cls, example_obs, action_dim, arch='256-256', orthogonal_init=False):
+        obs_is_dict = isinstance(example_obs, dict)
+        if obs_is_dict:
+            cifar_heads = nn.ModuleDict()
+            flat_observation_dim = 0
+            for k, v in sorted(example_obs.items()):
+                if v.ndim == 3:
+                    assert v.shape == (3, 32, 32), 'Only CIFAR images allowed.'
+                    cifar_heads[k] = get_cifar_head()
+                    # We will use a convolutional head with 10 outputs
+                    flat_observation_dim += 10
+                elif v.ndim == 1:
+                    flat_observation_dim  += v.shape[0]
+                else:
+                    raise Exception('Only image and vector observation entries supported.')
+        else:
+            flat_observation_dim = example_obs.shape[0]
+        q_func = cls(flat_observation_dim, action_dim, arch, orthogonal_init)
+        if obs_is_dict:
+            q_func.cifar_heads = cifar_heads
+        return q_func
 
     @multiple_action_q_function
     def forward(self, observations, actions):
-        if type(observations) == dict:
-            observations = torch.hstack([v for k, v in sorted(observations.items())])
-        input_tensor = torch.cat([observations, actions], dim=-1)
+        if isinstance(observations, dict):
+            observations_flattened = self.flatten_obs(observations)
+        input_tensor = torch.cat([observations_flattened, actions], dim=-1)
         return torch.squeeze(self.network(input_tensor), dim=-1)
+    
+    def flatten_obs(self, observations):
+        observations_copy = {k: v for k, v in observations.items()}
+        for k, v in observations_copy.items():
+            if v.ndim != 4:
+                continue
+            for layer in self.cifar_heads[k]:
+                observations_copy[k] = layer(observations_copy[k])
+        return torch.hstack([v for _, v in sorted(observations_copy.items())])
 
 
 class Scalar(nn.Module):

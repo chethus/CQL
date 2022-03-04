@@ -24,7 +24,8 @@ import locked_doors.room_world.multiroom
 
 
 FLAGS_DEF = define_flags_with_default(
-    env='HalfCheetah-v2',
+    train_env='HalfCheetah-v2',
+    eval_env='HalfCheetah-v2',
     max_traj_length=1000,
     replay_buffer_size=1000000,
     seed=42,
@@ -68,8 +69,8 @@ def main(argv):
 
     set_random_seed(FLAGS.seed)
 
-    train_env = gym.make(FLAGS.env).unwrapped
-    eval_env = gym.make(FLAGS.env).unwrapped
+    train_env = gym.make(FLAGS.train_env).unwrapped
+    eval_env = gym.make(FLAGS.eval_env).unwrapped
 
     if FLAGS.flatten_obs:
         train_env = gym.wrappers.FlattenObservation(train_env)
@@ -84,13 +85,8 @@ def main(argv):
         replay_buffer = DictReplayBuffer(FLAGS.replay_buffer_size)
     
     example_obs = train_env.reset()
-    if type(example_obs) == dict:
-        observation_dim = sum(map(np.size, example_obs.values()))
-    else:
-        observation_dim = eval_sampler.env.observation_space.shape[0]
-
-    policy = TanhGaussianPolicy(
-        observation_dim,
+    policy = TanhGaussianPolicy.build_from_obs(
+        example_obs,
         eval_sampler.env.action_space.shape[0],
         arch=FLAGS.policy_arch,
         log_std_multiplier=FLAGS.policy_log_std_multiplier,
@@ -98,16 +94,16 @@ def main(argv):
         orthogonal_init=FLAGS.orthogonal_init,
     )
 
-    qf1 = FullyConnectedQFunction(
-        observation_dim,
+    qf1 = FullyConnectedQFunction.build_from_obs(
+        example_obs,
         eval_sampler.env.action_space.shape[0],
         arch=FLAGS.qf_arch,
         orthogonal_init=FLAGS.orthogonal_init,
     )
     target_qf1 = deepcopy(qf1)
 
-    qf2 = FullyConnectedQFunction(
-        observation_dim,
+    qf2 = FullyConnectedQFunction.build_from_obs(
+        example_obs,
         eval_sampler.env.action_space.shape[0],
         arch=FLAGS.qf_arch,
         orthogonal_init=FLAGS.orthogonal_init,
@@ -123,15 +119,25 @@ def main(argv):
     sampler_policy = SamplerPolicy(policy, FLAGS.device)
 
     viskit_metrics = {}
+    recent_traj_infos = []
     for epoch in range(FLAGS.n_epochs):
         metrics = {}
         with Timer() as rollout_timer:
-            train_sampler.sample(
+            _, traj_info = train_sampler.sample(
                 sampler_policy, FLAGS.n_env_steps_per_epoch,
                 deterministic=False, replay_buffer=replay_buffer
             )
+            recent_traj_infos.append(traj_info)
+            if len(recent_traj_infos) > FLAGS.eval_n_trajs:
+                del recent_traj_infos[0:len(recent_traj_infos) - FLAGS.eval_n_trajs]
             metrics['env_steps'] = replay_buffer.total_steps
             metrics['epoch'] = epoch
+            if len(recent_traj_infos) == FLAGS.eval_n_trajs:
+                for k in recent_traj_infos[0].keys():
+                    metrics[f'train_env/runavg_last_{k}'] = np.mean([traj_info[k][-1] for traj_info in recent_traj_infos])
+                    metrics[f'train_env/runavg_min_{k}'] = np.mean([min(traj_info[k]) for traj_info in recent_traj_infos])
+                    metrics[f'train_env/runavg_max_{k}'] = np.mean([max(traj_info[k]) for traj_info in recent_traj_infos])
+                    metrics[f'train_env/runavg_{k}'] = np.mean([np.mean(traj_info[k]) for traj_info in recent_traj_infos])
 
         with Timer() as train_timer:
             for batch_idx in range(FLAGS.n_train_step_per_epoch):
@@ -149,14 +155,14 @@ def main(argv):
                     sampler_policy, FLAGS.eval_n_trajs, deterministic=True
                 )
 
-                metrics['average_return'] = np.mean([np.sum(t['rewards']) for t in trajs])
-                metrics['average_traj_length'] = np.mean([len(t['rewards']) for t in trajs])
+                metrics['eval_env/average_return'] = np.mean([np.sum(t['rewards']) for t in trajs])
+                metrics['eval_env/average_traj_length'] = np.mean([len(t['rewards']) for t in trajs])
                 info_keys = traj_infos[0].keys()
                 for k in info_keys:
-                    metrics[f'env/avg_last_{k}'] = np.mean([traj_info[k][-1] for traj_info in traj_infos])
-                    metrics[f'env/avg_min_{k}'] = np.mean([min(traj_info[k]) for traj_info in traj_infos])
-                    metrics[f'env/avg_max_{k}'] = np.mean([max(traj_info[k]) for traj_info in traj_infos])
-                    metrics[f'env/avg_{k}'] = np.mean([np.mean(traj_info[k]) for traj_info in traj_infos])
+                    metrics[f'eval_env/avg_last_{k}'] = np.mean([traj_info[k][-1] for traj_info in traj_infos])
+                    metrics[f'eval_env/avg_min_{k}'] = np.mean([min(traj_info[k]) for traj_info in traj_infos])
+                    metrics[f'eval_env/avg_max_{k}'] = np.mean([max(traj_info[k]) for traj_info in traj_infos])
+                    metrics[f'eval_env/avg_{k}'] = np.mean([np.mean(traj_info[k]) for traj_info in traj_infos])
 
                 if FLAGS.save_model:
                     save_data = {'sac': sac, 'variant': variant, 'epoch': epoch}

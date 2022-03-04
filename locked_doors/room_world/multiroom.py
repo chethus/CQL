@@ -225,7 +225,7 @@ if True:
         max_episode_steps=100,
         kwargs=dict(dataset='CIFAR10', train=True),
     )
-    for dataset_size in [100, 1000, 10000]:
+    for dataset_size in [4, 100, 1000, 10000]:
         gym.register(f'CIFARLockedDoorsEnvTrain{dataset_size}-v2',
             entry_point=LockedDoorsImageEnv,
             max_episode_steps=100,

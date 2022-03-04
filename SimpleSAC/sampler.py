@@ -13,13 +13,21 @@ class StepSampler(object):
 
     def sample(self, policy, n_steps, deterministic=False, replay_buffer=None):
         traj = defaultdict(list)
+        traj_info = defaultdict(list)
         for _ in range(n_steps):
             self._traj_steps += 1
             observation = self._current_observation
+            obs_is_arr = type(observation).__module__ == np.__name__
+            if obs_is_arr:
+                observations_batch = np.expand_dims(observation, 0)
+            elif isinstance(observation, dict):
+                observations_batch = {k: np.expand_dims(v, 0) for k, v in observation.items()}
+            else:
+                raise Exception('Only array and dictionary observations supported.')
             action = policy(
-                observation, deterministic=deterministic
+                observations_batch, deterministic=deterministic
             )[0, :]
-            next_observation, reward, done, _ = self.env.step(action)
+            next_observation, reward, done, info = self.env.step(action)
             transition = dict(
                 **flatten_dict(dict(observations=observation)),
                 actions=action,
@@ -29,6 +37,9 @@ class StepSampler(object):
             )
             for k, v in transition.items():
                 traj[k].append(v)
+            
+            for k, v in info.items():
+                traj_info[k].append(v)
 
             if replay_buffer is not None:
                 replay_buffer.add_sample(
@@ -44,7 +55,7 @@ class StepSampler(object):
         traj = flatten_dict(traj)
         for k, v in traj.items():
             traj[k] = np.array(v, dtype=np.float32)
-        return traj
+        return traj, traj_info
 
     @property
     def env(self):
@@ -64,6 +75,13 @@ class TrajSampler(object):
             observation = self.env.reset()
 
             for _ in range(self.max_traj_length):
+                obs_is_arr = type(observation).__module__ == np.__name__
+                if obs_is_arr:
+                    observation = np.expand_dims(observation, 0)
+                elif isinstance(observation, dict):
+                    observation = {k: np.expand_dims(v, 0) for k, v in observation.items()}
+                else:
+                    raise Exception('Only array and dictionary observations supported.')
                 action = policy(
                     observation, deterministic=deterministic
                 )[0, :]

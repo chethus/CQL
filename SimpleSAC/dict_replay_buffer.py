@@ -1,5 +1,6 @@
 from copy import copy, deepcopy
 from queue import Queue
+from select import select
 from .utils import flatten_dict
 import threading
 
@@ -35,9 +36,10 @@ class DictReplayBuffer(object):
     def add_sample(self, observation, action, reward, next_observation, done):
         if not self._initialized:
             self._init_storage(observation, action.size)
-
+        observation = flatten_dict(observation)
         for k, v in observation.items():
             self._observations[k][self._next_idx, ...] = np.array(v, dtype=np.float32)
+        next_observation = flatten_dict(next_observation)
         for k, v in next_observation.items():
             self._next_observations[k][self._next_idx, ...] = np.array(v, dtype=np.float32)
         self._actions[self._next_idx, :] = np.array(action, dtype=np.float32)
