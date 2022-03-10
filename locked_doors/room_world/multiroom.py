@@ -168,7 +168,7 @@ class LockedDoorsEnv(gym.Env):
         info['correct_slot'] = self.env_id
         return obs, r, done, info
 
-from ..room_world import datasets
+from . import datasets
 dataset_dir = osp.abspath(osp.join(osp.dirname(__file__), '../datasets'))
 
 

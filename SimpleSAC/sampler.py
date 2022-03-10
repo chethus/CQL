@@ -68,22 +68,28 @@ class TrajSampler(object):
         self.max_traj_length = max_traj_length
         self._env = env
 
-    def sample(self, policy, n_trajs, deterministic=False, replay_buffer=None):
+    def sample(self, policy, n_trajs, deterministic=False, replay_buffer=None, reset_id=None):
         trajs, traj_infos = [], []
         for _ in range(n_trajs):
             traj, traj_info = defaultdict(list), defaultdict(list)
-            observation = self.env.reset()
+            
+            if reset_id is not None:
+                assert callable(getattr(self.env, 'reset_specific')), 'Specific resets not supported.'
+                self.env.reset()
+                observation, _ = self.env.env.env.reset_specific(reset_id)
+            else:
+                observation = self.env.reset()
 
             for _ in range(self.max_traj_length):
                 obs_is_arr = type(observation).__module__ == np.__name__
                 if obs_is_arr:
-                    observation = np.expand_dims(observation, 0)
+                    observations_batch = np.expand_dims(observation, 0)
                 elif isinstance(observation, dict):
-                    observation = {k: np.expand_dims(v, 0) for k, v in observation.items()}
+                    observations_batch = {k: np.expand_dims(v, 0) for k, v in observation.items()}
                 else:
                     raise Exception('Only array and dictionary observations supported.')
                 action = policy(
-                    observation, deterministic=deterministic
+                    observations_batch, deterministic=deterministic
                 )[0, :]
                 next_observation, reward, done, info = self.env.step(action)
                 transition = dict(
