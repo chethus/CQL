@@ -6,6 +6,7 @@ from torch.distributions import Normal
 from torch.distributions.transformed_distribution import TransformedDistribution
 from torch.distributions.transforms import TanhTransform
 from .utils import get_cifar_head
+import pickle as pkl
 
 
 def extend_and_repeat(tensor, dim, repeat):
@@ -202,7 +203,26 @@ class TanhGaussianPolicy(nn.Module):
                 observations_copy[k] = layer(observations_copy[k])
         return torch.hstack([v for _, v in sorted(observations_copy.items())])
 
-        
+class CIFAROneHotPolicy(nn.Module):
+
+    def __init__(self, cifar_head, one_hot_fc_net):
+        super().__init__()
+        self.modules_dict = nn.ModuleDict()
+        self.modules_dict['cifar_head'] = cifar_head
+        self.modules_dict['one_hot_fc_net'] = one_hot_fc_net
+    
+    def forward(self, observations, deterministic=False):
+        if isinstance(observations, dict):
+            flattened_obs = self.conv_obs(observations)
+        return self.modules_dict['one_hot_fc_net'](flattened_obs, deterministic)
+
+    def conv_obs(self, observations):
+        observations_copy = {k: v for k, v in observations.items()}
+        for k, v in observations_copy.items():
+            if v.ndim != 4:
+                continue
+            observations_copy[k] = F.one_hot(self.modules_dict['cifar_head'](observations_copy[k])[:,:4].argmax(dim=1).reshape(-1), 4)
+        return observations_copy
 
 
 class SamplerPolicy(object):

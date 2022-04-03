@@ -24,6 +24,8 @@ import locked_doors.room_world.multiroom
 
 
 FLAGS_DEF = define_flags_with_default(
+    exp_prefix='test',
+    exp_descriptor='sac',
     train_env='HalfCheetah-v2',
     eval_env='HalfCheetah-v2',
     max_traj_length=1000,
@@ -48,6 +50,7 @@ FLAGS_DEF = define_flags_with_default(
 
     sac=SAC.get_default_config(),
     logging=WandBLogger.get_default_config(),
+    snapshot_period=0,
     env_logging=False,
 
     flatten_obs=False,
@@ -58,12 +61,18 @@ def main(argv):
     FLAGS = absl.flags.FLAGS
 
     variant = get_user_flags(FLAGS, FLAGS_DEF)
-    wandb_logger = WandBLogger(config=FLAGS.logging, variant=variant)
+    
+    variant['exp_descriptor'] = variant['exp_descriptor'].format(**variant)
+    FLAGS.exp_descriptor = variant['exp_descriptor']
+    wandb_logger = WandBLogger(config=FLAGS.logging, variant=variant,
+        exp_prefix=variant['exp_prefix'],
+        exp_descriptor=variant['exp_descriptor'])
+    base_log_dir = os.path.join(FLAGS.logging.output_dir, variant['exp_prefix'])
     setup_logger(
         variant=variant,
         exp_id=wandb_logger.experiment_id,
         seed=FLAGS.seed,
-        base_log_dir=FLAGS.logging.output_dir,
+        base_log_dir=base_log_dir,
         include_exp_prefix_sub_dir=False
     )
 
@@ -167,6 +176,8 @@ def main(argv):
                 if FLAGS.save_model:
                     save_data = {'sac': sac, 'variant': variant, 'epoch': epoch}
                     wandb_logger.save_pickle(save_data, 'model.pkl')
+                    if FLAGS.snapshot_period > 0 and (epoch + 1) % FLAGS.snapshot_period == 0:
+                        wandb_logger.save_pickle(save_data, f'model_epoch_{epoch}.pkl')
 
         metrics['rollout_time'] = rollout_timer()
         metrics['train_time'] = train_timer()

@@ -1,6 +1,7 @@
 import random
 import pprint
 import time
+import datetime
 import uuid
 import tempfile
 import os
@@ -8,8 +9,10 @@ from copy import copy
 from socket import gethostname
 import pickle
 import torch.nn as nn
-
+import wandb
+import torch
 import numpy as np
+import pickle as pkl
 
 import absl.flags
 from absl import logging
@@ -18,9 +21,6 @@ from ml_collections.config_flags import config_flags
 from ml_collections.config_dict import config_dict
 from collections import defaultdict
 
-import wandb
-
-import torch
 
 
 class Timer(object):
@@ -57,11 +57,14 @@ class WandBLogger(object):
             config.update(ConfigDict(updates).copy_and_resolve_references())
         return config
 
-    def __init__(self, config, variant):
+    def __init__(self, config, variant, exp_prefix='', exp_descriptor='', unique_identifier=None):
         self.config = self.get_default_config(config)
 
+        if not unique_identifier:
+            unique_identifier = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+
         if self.config.experiment_id is None:
-            self.config.experiment_id = uuid.uuid4().hex
+            self.config.experiment_id = f'{exp_prefix}_{exp_descriptor}_{unique_identifier}'
 
         if self.config.prefix != '':
             self.config.project = '{}--{}'.format(self.config.prefix, self.config.project)
@@ -84,6 +87,8 @@ class WandBLogger(object):
             reinit=True,
             config=self._variant,
             project=self.config.project,
+            tags=[exp_prefix],
+            group=exp_prefix,
             dir=self.config.output_dir,
             id=self.config.experiment_id,
             anonymous=self.config.anonymous,
@@ -213,9 +218,18 @@ def get_cifar_head():
         nn.Linear(120, 84),
         nn.ReLU(),
         nn.Linear(84, 10)
-    ])
+])
 
 def prefix_metrics(metrics, prefix):
     return {
         '{}/{}'.format(prefix, key): value for key, value in metrics.items()
     }
+
+def load_model(model_path):
+    with open(model_path, 'rb') as model_file:
+        return pkl.load(model_file)
+
+def load_sac(model_path):
+    with open(model_path, 'rb') as model_file:
+        model = pkl.load(model_file)
+        return model['sac']
