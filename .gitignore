@@ -142,4 +142,4 @@ data/
 locked_doors/datasets/
 
 # Experiment outputs
-experiment_output
+experiment_output/

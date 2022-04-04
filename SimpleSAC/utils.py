@@ -204,7 +204,7 @@ def unflatten_dict(d, separator='.'):
             d_copy[k] = unflatten_dict(v)
     return dict(d_copy)
 
-def get_cifar_head():
+def sequential_head():
     return nn.ModuleList([
         nn.Conv2d(3, 6, 5),
         nn.ReLU(),
@@ -218,7 +218,7 @@ def get_cifar_head():
         nn.Linear(120, 84),
         nn.ReLU(),
         nn.Linear(84, 10)
-])
+    ])
 
 def prefix_metrics(metrics, prefix):
     return {

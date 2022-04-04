@@ -39,6 +39,7 @@ FLAGS_DEF = define_flags_with_default(
     orthogonal_init=False,
     policy_log_std_multiplier=1.0,
     policy_log_std_offset=-1.0,
+    resnet_head=False,
 
     n_epochs=2000,
     n_env_steps_per_epoch=1000,
@@ -101,6 +102,7 @@ def main(argv):
         log_std_multiplier=FLAGS.policy_log_std_multiplier,
         log_std_offset=FLAGS.policy_log_std_offset,
         orthogonal_init=FLAGS.orthogonal_init,
+        resnet_head=FLAGS.resnet_head,
     )
 
     qf1 = FullyConnectedQFunction.build_from_obs(
@@ -108,6 +110,7 @@ def main(argv):
         eval_sampler.env.action_space.shape[0],
         arch=FLAGS.qf_arch,
         orthogonal_init=FLAGS.orthogonal_init,
+        resnet_head=FLAGS.resnet_head,
     )
     target_qf1 = deepcopy(qf1)
 
@@ -116,6 +119,7 @@ def main(argv):
         eval_sampler.env.action_space.shape[0],
         arch=FLAGS.qf_arch,
         orthogonal_init=FLAGS.orthogonal_init,
+        resnet_head=FLAGS.resnet_head,
     )
     target_qf2 = deepcopy(qf2)
 

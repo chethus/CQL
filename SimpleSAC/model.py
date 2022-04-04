@@ -5,7 +5,8 @@ import torch.nn.functional as F
 from torch.distributions import Normal
 from torch.distributions.transformed_distribution import TransformedDistribution
 from torch.distributions.transforms import TanhTransform
-from .utils import get_cifar_head
+from .utils import sequential_head
+from models.resnet import ResNet18
 import pickle as pkl
 
 
@@ -151,7 +152,7 @@ class TanhGaussianPolicy(nn.Module):
     @classmethod
     def build_from_obs(cls, example_obs, action_dim, arch='256-256',
                  log_std_multiplier=1.0, log_std_offset=-1.0,
-                 orthogonal_init=False, no_tanh=False):
+                 orthogonal_init=False, no_tanh=False, resnet_head=False):
         obs_is_dict = isinstance(example_obs, dict)
         if obs_is_dict:
             cifar_heads = nn.ModuleDict()
@@ -159,7 +160,7 @@ class TanhGaussianPolicy(nn.Module):
             for k, v in sorted(example_obs.items()):
                 if v.ndim == 3:
                     assert v.shape == (3, 32, 32), 'Only CIFAR images allowed.'
-                    cifar_heads[k] = get_cifar_head()
+                    cifar_heads[k] = ResNet18() if resnet_head else sequential_head()
                     # We will use a convolutional head with 10 outputs
                     flat_observation_dim += 10
                 elif v.ndim == 1:
@@ -199,14 +200,23 @@ class TanhGaussianPolicy(nn.Module):
         for k, v in observations_copy.items():
             if v.ndim != 4:
                 continue
-            for layer in self.cifar_heads[k]:
-                observations_copy[k] = layer(observations_copy[k])
+            if isinstance(self.cifar_heads[k], nn.ModuleList):
+                for layer in self.cifar_heads[k]:
+                    observations_copy[k] = layer(observations_copy[k])
+            else:
+                observations_copy[k] = self.cifar_heads[k](observations_copy[k])
         return torch.hstack([v for _, v in sorted(observations_copy.items())])
 
 class CIFAROneHotPolicy(nn.Module):
 
-    def __init__(self, cifar_head, one_hot_fc_net):
+    def __init__(self, cifar_path, model_path):
         super().__init__()
+        self.device = 'cuda' if torch.cuda.is_available else 'cpu'
+        with open(model_path, 'rb') as f:
+            model = pkl.load(f)
+            one_hot_fc_net = model['sac'].policy.to(self.device)
+        with open(cifar_path, 'rb') as f:
+            cifar_head = pkl.load(f).to(self.device)
         self.modules_dict = nn.ModuleDict()
         self.modules_dict['cifar_head'] = cifar_head
         self.modules_dict['one_hot_fc_net'] = one_hot_fc_net
@@ -221,7 +231,8 @@ class CIFAROneHotPolicy(nn.Module):
         for k, v in observations_copy.items():
             if v.ndim != 4:
                 continue
-            observations_copy[k] = F.one_hot(self.modules_dict['cifar_head'](observations_copy[k])[:,:4].argmax(dim=1).reshape(-1), 4)
+            v = v.to(self.device)
+            observations_copy[k] = F.one_hot(self.modules_dict['cifar_head'](v)[:,:4].argmax(dim=1).reshape(-1), 4)
         return observations_copy
 
 
@@ -244,8 +255,9 @@ class SamplerPolicy(object):
                 observations = {k: torch.tensor(v, dtype=torch.float32,
                     device=self.device) for k, v in observations.items()}
                     
-            actions, _ = self.policy(observations, deterministic)
-            actions = actions.cpu().numpy()
+            actions = self.policy(observations, deterministic)[0]
+            if torch.is_tensor(actions):
+                actions = actions.cpu().numpy()
         return actions
 
 
@@ -262,7 +274,7 @@ class FullyConnectedQFunction(nn.Module):
         )
     
     @classmethod
-    def build_from_obs(cls, example_obs, action_dim, arch='256-256', orthogonal_init=False):
+    def build_from_obs(cls, example_obs, action_dim, arch='256-256', orthogonal_init=False, resnet_head=False):
         obs_is_dict = isinstance(example_obs, dict)
         if obs_is_dict:
             cifar_heads = nn.ModuleDict()
@@ -270,7 +282,7 @@ class FullyConnectedQFunction(nn.Module):
             for k, v in sorted(example_obs.items()):
                 if v.ndim == 3:
                     assert v.shape == (3, 32, 32), 'Only CIFAR images allowed.'
-                    cifar_heads[k] = get_cifar_head()
+                    cifar_heads[k] = ResNet18() if resnet_head else sequential_head()
                     # We will use a convolutional head with 10 outputs
                     flat_observation_dim += 10
                 elif v.ndim == 1:
@@ -296,8 +308,11 @@ class FullyConnectedQFunction(nn.Module):
         for k, v in observations_copy.items():
             if v.ndim != 4:
                 continue
-            for layer in self.cifar_heads[k]:
-                observations_copy[k] = layer(observations_copy[k])
+            if isinstance(self.cifar_heads[k], nn.ModuleList):
+                for layer in self.cifar_heads[k]:
+                    observations_copy[k] = layer(observations_copy[k])
+            else:
+                observations_copy[k] = self.cifar_heads[k](observations_copy[k])
         return torch.hstack([v for _, v in sorted(observations_copy.items())])
 
 
